@@ -1288,6 +1288,7 @@ class Attention(nn.Module):
     """
 
     format = None
+    export_gk020 = False
 
     def __init__(self, dim: int, num_heads: int = 8, attn_ratio: float = 0.5):
         """Initialize multi-head attention module.
@@ -1320,6 +1321,25 @@ class Attention(nn.Module):
         B, C, H, W = x.shape
         N = H * W
         qkv = self.qkv(x)
+
+        if self.export_gk020:
+            # GK020 only accepts 3D MatMul. Flatten QKV to (B, channels, N), then statically slice each head on
+            # the channel axis to avoid carrying a head dimension and emitting extra Reshape nodes in ONNX.
+            qkv = qkv.reshape(B, -1, N)
+            channels_per_head = self.key_dim * 2 + self.head_dim
+            attended, values = [], []
+            for i in range(self.num_heads):
+                start = i * channels_per_head
+                q = qkv[:, start : start + self.key_dim]
+                k = qkv[:, start + self.key_dim : start + self.key_dim * 2]
+                v = qkv[:, start + self.key_dim * 2 : start + channels_per_head]
+                attn = ((q * self.scale).transpose(1, 2) @ k).softmax(dim=2)
+                attended.append(v @ attn.transpose(1, 2))
+                values.append(v)
+            v = torch.cat(values, dim=1).view(B, C, H, W)
+            x = torch.cat(attended, dim=1).view(B, C, H, W) + self.pe(v)
+            return self.proj(x)
+
         q, k, v = qkv.view(B, self.num_heads, self.key_dim * 2 + self.head_dim, N).split(
             [self.key_dim, self.key_dim, self.head_dim], dim=2
         )

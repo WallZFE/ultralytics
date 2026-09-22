@@ -79,6 +79,8 @@ class Detect(nn.Module):
 
     dynamic = False  # force grid reconstruction
     export = False  # export mode
+    export_onnx = False  # export raw per-scale detection head outputs
+    export_onnx_head = "one-to-many"  # raw ONNX branch: one-to-many or one-to-one
     format = None  # export format
     max_det = 300  # max_det
     agnostic_nms = False
@@ -191,6 +193,14 @@ class Detect(nn.Module):
                 6) with [x1, y1, x2, y2, score, class_index] when end-to-end; returned alone in export mode and
                 otherwise as a (predictions, raw prediction dict) tuple.
         """
+        if self.export_onnx:
+            if self.export_onnx_head == "one-to-many":
+                box_head, cls_head = self.cv2, self.cv3
+            elif self.export_onnx_head == "one-to-one":
+                box_head, cls_head = self.one2one_cv2, self.one2one_cv3
+            else:
+                raise ValueError(f"Unsupported raw ONNX detection head: {self.export_onnx_head}")
+            return tuple(box_head[i](x[i]) for i in range(self.nl)) + tuple(cls_head[i](x[i]) for i in range(self.nl))
         preds = self.forward_head(x, **self.one2many)
         if getattr(self, "one2one_cv2", None) is not None:
             x_detach = [xi.detach() for xi in x] if self.training else x  # detach keeps one2one out of the backbone
