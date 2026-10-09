@@ -9,7 +9,7 @@ from ultralytics.nn.modules import Attention
 
 
 ROOT = Path(__file__).resolve().parent
-WEIGHTS = ROOT / "runs/detect/yolo26s-3/weights/best.pt"
+WEIGHTS = ROOT / "runs/detect/yolo26s/weights/best.pt"
 INPUT_SIZE = (544, 960)  # height, width
 OPSET = 13  # Supported by GK020 and used by the verified reference deployment.
 
@@ -69,7 +69,7 @@ def validate_gk020_onnx(path: Path, num_levels: int, num_classes: int, reg_max: 
 
 
 def main():
-    """Export four regression maps followed by four classification maps."""
+    """Export regression maps followed by classification maps for each feature level."""
     args = parse_args()
     weights = args.weights.expanduser().resolve()
     if not weights.is_file():
@@ -77,9 +77,9 @@ def main():
 
     model = YOLO(weights, task="detect")
     head = model.model.model[-1]
-    if getattr(head, "nl", None) != 3 or getattr(head, "reg_max", None) != 1:
+    if getattr(head, "nl", None) not in {3, 4} or getattr(head, "reg_max", None) != 1:
         raise ValueError(
-            f"Expected four-scale DFL-free YOLO26 head, got nl={getattr(head, 'nl', None)}, "
+            f"Expected three- or four-scale DFL-free YOLO26 head, got nl={getattr(head, 'nl', None)}, "
             f"reg_max={getattr(head, 'reg_max', None)}"
         )
     if args.head == "one-to-one" and getattr(head, "one2one_cv2", None) is None:

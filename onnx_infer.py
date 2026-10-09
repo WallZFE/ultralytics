@@ -11,7 +11,7 @@ import onnxruntime as ort
 
 
 ROOT = Path(__file__).resolve().parent
-MODEL = ROOT / "runs/detect/yolo26s-p2-4/weights/best_onetoone.onnx"
+MODEL = ROOT / "runs/detect/yolo26-lite-p2/weights/best_onetoone.onnx"
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 
 

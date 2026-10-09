@@ -2,7 +2,7 @@
 """将 LabelMe 原始数据和 benchmark 整理成 YOLO 检测数据集。
 
 默认输入：
-  - data/origin_data：递归查找 LabelMe JSON，作为 train
+  - data/origin_data：递归查找图片和同名 LabelMe JSON，作为 train
   - data/benchmark：同目录存放图片和同名 LabelMe JSON，作为 val
 
 默认输出：
@@ -67,6 +67,15 @@ class DatasetError(ValueError):
     """输入数据不符合预期。"""
 
 
+def parse_bool(value: str) -> bool:
+    normalized = value.lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"无效布尔值：{value!r}")
+
+
 def parse_args() -> argparse.Namespace:
     project_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -86,6 +95,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=project_root / "data" / "model_use",
+        # default=project_root / "data" / "model_use_little",
         help="YOLO 数据集输出目录（默认：data/model_use）",
     )
     parser.add_argument(
@@ -93,7 +103,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         metavar="N",
-        help="只处理前 N 个 train 标注，0 表示全部（用于抽样验证）",
+        help="只处理前 N 张 train 图片，0 表示全部（用于抽样验证）",
     )
     parser.add_argument(
         "--limit-val",
@@ -106,6 +116,18 @@ def parse_args() -> argparse.Namespace:
         "--skip-invalid",
         action="store_true",
         help="跳过有问题的样本并继续；默认遇到错误立即停止",
+    )
+    parser.add_argument(
+        "--copy-unlabeled-train",
+        type=parse_bool,
+        default=True,
+        help="train 图片没有有效标签时是否复制图片并生成空 txt（默认：true）",
+    )
+    parser.add_argument(
+        "--copy-unlabeled-val",
+        type=parse_bool,
+        default=False,
+        help="val 图片没有有效标签时是否复制图片并生成空 txt（默认：true）",
     )
     parser.add_argument(
         "--clean",
@@ -122,19 +144,6 @@ def finite_number(value: Any, field: str) -> float:
     if not math.isfinite(number):
         raise DatasetError(f"{field} 不是有限数：{value!r}")
     return number
-
-
-def find_image(directory: Path, stem: str) -> Path | None:
-    matches = sorted(
-        path
-        for path in directory.iterdir()
-        if path.is_file()
-        and path.stem == stem
-        and path.suffix.lower() in IMAGE_SUFFIXES
-    )
-    if len(matches) > 1:
-        raise DatasetError(f"找到多张同名图片：{matches}")
-    return matches[0] if matches else None
 
 
 def labelme_to_yolo(json_path: Path) -> tuple[list[str], Counter[int]]:
@@ -237,29 +246,46 @@ def copy_image(source: Path, destination: Path) -> None:
 
 
 def prepare_train(
-    origin_dir: Path, output_dir: Path, limit: int, skip_invalid: bool
+    origin_dir: Path,
+    output_dir: Path,
+    limit: int,
+    skip_invalid: bool,
+    copy_unlabeled: bool,
 ) -> tuple[int, Counter[int], int]:
-    json_paths = limited(origin_dir.rglob("*.json"), limit)
-    if not json_paths:
-        raise DatasetError(f"train 目录中没有 JSON：{origin_dir}")
+    image_paths = limited(
+        (
+            path
+            for path in origin_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+        ),
+        limit,
+    )
+    if not image_paths:
+        raise DatasetError(f"train 目录中没有图片：{origin_dir}")
 
     image_count = 0
     skipped = 0
     counts: Counter[int] = Counter()
     used_stems: dict[str, Path] = {}
-    show_progress("train", 0, len(json_paths))
-    for progress, json_path in enumerate(json_paths, start=1):
+    show_progress("train", 0, len(image_paths))
+    for progress, image_path in enumerate(image_paths, start=1):
+        json_path = image_path.with_suffix(".json")
         try:
-            image_path = find_image(json_path.parent, json_path.stem)
-            if image_path is None:
-                raise DatasetError("找不到同目录、同名的图片")
+            if json_path.is_file():
+                lines, sample_counts = labelme_to_yolo(json_path)
+            else:
+                lines, sample_counts = [], Counter()
+            if not lines and not copy_unlabeled:
+                skipped += 1
+                show_progress("train", progress, len(image_paths))
+                continue
+
             normalized_stem = image_path.stem.casefold()
             if normalized_stem in used_stems:
                 raise DatasetError(
                     f"扁平输出发生重名：{image_path.name!r}；"
                     f"另一个文件为 {used_stems[normalized_stem]}"
                 )
-            lines, sample_counts = labelme_to_yolo(json_path)
             destination_image = (
                 output_dir / "images" / "train" / image_path.name
             ).with_suffix(image_path.suffix.lower())
@@ -269,19 +295,23 @@ def prepare_train(
         except (DatasetError, OSError) as exc:
             if not skip_invalid:
                 print(file=sys.stderr)
-                raise DatasetError(f"train {json_path}: {exc}") from exc
-            print(f"警告：跳过 train {json_path}：{exc}", file=sys.stderr)
+                raise DatasetError(f"train {image_path}: {exc}") from exc
+            print(f"警告：跳过 train {image_path}：{exc}", file=sys.stderr)
             skipped += 1
         else:
             used_stems[normalized_stem] = image_path
             counts.update(sample_counts)
             image_count += 1
-        show_progress("train", progress, len(json_paths))
+        show_progress("train", progress, len(image_paths))
     return image_count, counts, skipped
 
 
 def prepare_val(
-    benchmark_dir: Path, output_dir: Path, limit: int, skip_invalid: bool
+    benchmark_dir: Path,
+    output_dir: Path,
+    limit: int,
+    skip_invalid: bool,
+    copy_unlabeled: bool,
 ) -> tuple[int, Counter[int], int]:
     image_paths = limited(
         (
@@ -302,9 +332,14 @@ def prepare_val(
         relative = image_path.relative_to(benchmark_dir)
         json_path = image_path.with_suffix(".json")
         try:
-            if not json_path.is_file():
-                raise DatasetError("找不到同名的 LabelMe JSON 标签")
-            lines, sample_counts = labelme_to_yolo(json_path)
+            if json_path.is_file():
+                lines, sample_counts = labelme_to_yolo(json_path)
+            else:
+                lines, sample_counts = [], Counter()
+            if not lines and not copy_unlabeled:
+                skipped += 1
+                show_progress("val", progress, len(image_paths))
+                continue
 
             destination_image = output_dir / "images" / "val" / relative
             destination_label = (output_dir / "labels" / "val" / relative).with_suffix(".txt")
@@ -400,10 +435,18 @@ def main() -> int:
 
     try:
         train_images, train_counts, skipped_train = prepare_train(
-            origin_dir, output_dir, args.limit_train, args.skip_invalid
+            origin_dir,
+            output_dir,
+            args.limit_train,
+            args.skip_invalid,
+            args.copy_unlabeled_train,
         )
         val_images, val_counts, skipped_val = prepare_val(
-            benchmark_dir, output_dir, args.limit_val, args.skip_invalid
+            benchmark_dir,
+            output_dir,
+            args.limit_val,
+            args.skip_invalid,
+            args.copy_unlabeled_val,
         )
         write_metadata(output_dir, train_images, val_images, train_counts, val_counts)
     except DatasetError as exc:
