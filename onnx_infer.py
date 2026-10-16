@@ -11,7 +11,7 @@ import onnxruntime as ort
 
 
 ROOT = Path(__file__).resolve().parent
-MODEL = ROOT / "runs/detect/yolo26-lite-p2/weights/best_onetoone.onnx"
+MODEL = ROOT / "runs/detect/yolo26s/weights/best_onetoone.onnx"
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 
 
@@ -43,7 +43,7 @@ def letterbox(image: np.ndarray, shape: tuple[int, int]):
 
 
 def decode(outputs: list[np.ndarray], strides: list[int], conf: float, max_det: int):
-    """Decode four raw regression maps and four raw class maps from the one-to-one head."""
+    """Decode raw regression and class maps from each scale of the one-to-one head."""
     levels = len(outputs) // 2
     boxes, scores = [], []
     for box_map, score_map, stride in zip(outputs[:levels], outputs[levels:], strides):
@@ -130,9 +130,10 @@ def main():
     metadata = session.get_modelmeta().custom_metadata_map
     names = ast.literal_eval(metadata.get("names", "{}"))
     output_shapes = [output.shape for output in session.get_outputs()]
-    if len(output_shapes) != 8 or any(shape[1] != 4 for shape in output_shapes[:4]):
-        raise ValueError(f"Expected 8 raw YOLO outputs (4 box + 4 class), got {output_shapes}")
-    strides = [input_width // shape[3] for shape in output_shapes[:4]]
+    levels = len(output_shapes) // 2
+    if len(output_shapes) not in {6, 8} or any(shape[1] != 4 for shape in output_shapes[:levels]):
+        raise ValueError(f"Expected 6 or 8 raw YOLO outputs (3 or 4 box + class maps), got {output_shapes}")
+    strides = [input_width // shape[3] for shape in output_shapes[:levels]]
 
     images, source_root = get_images(args.source.expanduser().resolve())
     output_root = args.output.expanduser().resolve()

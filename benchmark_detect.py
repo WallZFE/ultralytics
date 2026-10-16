@@ -9,7 +9,7 @@ from ultralytics import YOLO
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_WEIGHTS = ROOT / "runs/detect/yolo26s_new_b32/weights/best.pt"
+DEFAULT_WEIGHTS = ROOT / "runs/detect/yolo26s-3/weights/best.pt"
 DEFAULT_DATA = ROOT.parent / "data/model_use/dataset.yaml"
 
 
